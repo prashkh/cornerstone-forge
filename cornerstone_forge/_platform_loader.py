@@ -89,17 +89,23 @@ class PlatformConfig:
 
 # Cornerstone uses Python-keyword booleans in `gds_layer:` expressions,
 # e.g. ``(wg_lf or not wg_df) and not (grating_ebl or grating_duv)``.
-# We rewrite ``not / and / or`` to ``~ / & / |`` so Python's ``ast`` can
-# parse the expression, then walk the AST emitting MaskSpec operations
-# (PhotonForge's MaskSpec supports ``+`` for union, ``*`` for
-# intersection, and ``-`` for difference; ``not X`` becomes
-# ``MaskSpec() - X`` since an empty MaskSpec means "full bounds").
-
+#
+# Note on the ``or not <df_layer>`` clause: Cornerstone's process flow
+# uses paired light-field (LF) / dark-field (DF) layers — the foundry's
+# etcher etches where a DF layer is drawn, so "Si remains where wg_lf
+# OR (not wg_df)" is correct *for fabrication*. For simulation we want
+# only the explicitly drawn Si, so we strip out the ``or not <df>``
+# clauses before parsing. PhotonForge simulates exactly the geometry
+# the user draws.
 _BOOL_TOKEN = re.compile(r"\b(and|or|not)\b")
 _BOOL_MAP = {"and": "&", "or": "|", "not": "~"}
+_OR_NOT_DF_PATTERN = re.compile(r"\s+or\s+not\s+\w*_df\b", re.IGNORECASE)
 
 
 def _rewrite_yaml_expr(expr: str) -> str:
+    # Drop "or not <something>_df" clauses so Si only extrudes where
+    # the user explicitly drew on the LF layer.
+    expr = _OR_NOT_DF_PATTERN.sub("", expr)
     return _BOOL_TOKEN.sub(lambda m: _BOOL_MAP[m.group(1)], expr)
 
 
@@ -254,17 +260,17 @@ def build_extrusions(
         gds_expr = entry.get("gds_layer")
         is_metal = bool(entry.get("is_metal_layer"))
 
-        # BOX: first SiO2 entry with no gds_layer is the buried oxide.
-        if material == "SiO2" and gds_expr is None and not seen_box:
-            derived["box_thickness"] = thickness
-            seen_box = True
-            continue
-
-        # TOX: second SiO2 with no gds_layer is the top cladding.
-        if material == "SiO2" and gds_expr is None:
-            derived["top_oxide_thickness"] = thickness
-            in_above_tox = True
-            metal_z = z_si_top + thickness + config.metal_extra_z_above_tox
+        # SiO2 entries are background (BOX = first, TOX = second). v0.1
+        # ignores any gds_layer expression on SiO2 (e.g. ``not Isolation_DF``
+        # marking heater isolation trenches) — that's a charge-sim concern.
+        if material == "SiO2":
+            if not seen_box:
+                derived["box_thickness"] = thickness
+                seen_box = True
+            else:
+                derived["top_oxide_thickness"] = thickness
+                in_above_tox = True
+                metal_z = z_si_top + thickness + config.metal_extra_z_above_tox
             continue
 
         # Skip entries with no GDS layer that we didn't classify.
@@ -380,9 +386,22 @@ def build_port_specs(
         if not path_profiles:
             continue
 
-        # Port window width: 2x narrowest profile, or 4 µm whichever is wider.
+        # Port window width:
+        #   strip: 5x core width (mode + 2x mode area on each side),
+        #          minimum 2.5 µm.
+        #   rib  : ~5x core width, but capped well below the slab width
+        #          so the slab gets clipped at the port boundary. Without
+        #          clipping, the slab supports a continuous quasi-1D mode
+        #          that the mode solver finds instead of the core mode.
         narrow = min(p[0] for p in path_profiles)
-        port_width = max(2.0 * width if xs_type == "strip" else 4.0, 2.0 * narrow)
+        widest = max(p[0] for p in path_profiles)
+        if xs_type == "strip":
+            port_width = max(5.0 * narrow, 2.5)
+        else:
+            # Slab is the widest path_profile. Port must clip it.
+            slab_clip = widest * 0.5  # ~half the slab width
+            port_width = max(5.0 * narrow, 4.0)
+            port_width = min(port_width, slab_clip)
 
         target_neff = config.target_neff.get(
             name, _default_neff_for(xs.get("materials", "Si"))
