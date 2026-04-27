@@ -24,8 +24,9 @@ from typing import Any, Dict
 from . import _yaml_loader as _yl
 from ._platforms.si_220nm_passive import si220_passive
 from ._platforms.si_340nm import si340
+from ._platforms.si_500nm import si500
 
-__all__ = ["si220_passive", "si340", "drc_metadata"]
+__all__ = ["si220_passive", "si340", "si500", "drc_metadata"]
 
 
 def drc_metadata(platform: str = "Si_220nm_passive") -> Dict[Any, Any]:

@@ -389,19 +389,20 @@ def build_port_specs(
         # Port window width:
         #   strip: 5x core width (mode + 2x mode area on each side),
         #          minimum 2.5 µm.
-        #   rib  : ~5x core width, but capped well below the slab width
-        #          so the slab gets clipped at the port boundary. Without
-        #          clipping, the slab supports a continuous quasi-1D mode
-        #          that the mode solver finds instead of the core mode.
+        #   rib  : ~5x core width, capped well below the slab width if a
+        #          wide slab profile exists (so the slab gets clipped at
+        #          the port boundary instead of supporting a quasi-1D
+        #          slab mode).
         narrow = min(p[0] for p in path_profiles)
         widest = max(p[0] for p in path_profiles)
         if xs_type == "strip":
             port_width = max(5.0 * narrow, 2.5)
         else:
-            # Slab is the widest path_profile. Port must clip it.
-            slab_clip = widest * 0.5  # ~half the slab width
             port_width = max(5.0 * narrow, 4.0)
-            port_width = min(port_width, slab_clip)
+            # Only clip below slab width if there's actually a slab
+            # profile that's significantly wider than the core.
+            if widest > narrow * 4:
+                port_width = min(port_width, widest * 0.5)
 
         target_neff = config.target_neff.get(
             name, _default_neff_for(xs.get("materials", "Si"))
@@ -442,6 +443,8 @@ def build_technology(
     config: PlatformConfig,
     *,
     include_substrate: bool = False,
+    extrusions_override: Optional[List[pf.ExtrusionSpec]] = None,
+    derived_z_override: Optional[Dict[str, float]] = None,
     **_kwargs,  # accept and ignore extra parametric kwargs for now
 ) -> pf.Technology:
     """Build a ``photonforge.Technology`` for the given platform.
@@ -449,15 +452,29 @@ def build_technology(
     Reads the vendored ``process_overview.yaml`` and
     ``cross-sections/cross_sections.yaml`` and constructs the layer /
     extrusion / port specs from the platform config.
+
+    For platforms whose Si stack does not fit the "everything starts at
+    z=0" pattern (e.g. Si_500nm has a uniform slab underneath the rib),
+    pass ``extrusions_override`` and ``derived_z_override`` to bypass
+    the YAML-derived extrusion stack.
     """
     proc = _yl.load_process_overview(config.platform)
     xs = _yl.load_cross_sections(config.platform)
 
     aliases = build_alias_map(proc)
     layers = build_layer_specs(proc)
-    extrusions, derived = build_extrusions(
-        proc, aliases, config, include_substrate=include_substrate
-    )
+    if extrusions_override is not None:
+        extrusions = extrusions_override
+        derived = derived_z_override or {"box_thickness": 3.0, "top_oxide_thickness": 2.0, "si_top": 0.5}
+        if include_substrate:
+            si_medium = config.media.get("Si") or next(iter(config.media.values()))
+            extrusions = [
+                pf.ExtrusionSpec(pf.MaskSpec(), si_medium, (-pf.Z_INF, -derived["box_thickness"]))
+            ] + list(extrusions)
+    else:
+        extrusions, derived = build_extrusions(
+            proc, aliases, config, include_substrate=include_substrate
+        )
     ports = build_port_specs(xs, aliases, derived, config)
 
     bg = config.media.get("SiO2") or next(iter(config.media.values()))
