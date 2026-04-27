@@ -24,11 +24,41 @@ from . import _yaml_loader as _yl
 # are info-only and don't participate in the device stack).
 _INFO_LAYERS = {(99, 0), (100, 0)}
 
-# YAML cross_section names that correspond to electrical contact pads
-# (terminal-style ports rather than guided-mode optical ports).
-_ELECTRICAL_LAYERS = {
-    "dc": "Heat_CP_LF",  # Cornerstone Si_220nm_passive heater contact
-}
+# Names of LayerSpec entries that hold electrical / metal routing in
+# any Cornerstone platform. Used as a fallback when the cross_sections
+# YAML doesn't declare an explicit layer.
+_ELECTRICAL_LAYER_CANDIDATES = ("Heat_CP_LF", "Electrode_LF")
+
+
+def _electrical_layer_for_xs(tech: pf.Technology, xs_name: str, platform: str) -> tuple:
+    """Resolve the GDS routing layer for an electrical cross-section.
+
+    Order:
+        1. Read the layer directly from the cross_sections.yaml entry
+           (this is the foundry-specified source of truth).
+        2. Fall back to whichever metal layer the technology declares.
+    Returns (gds_layer, datatype).
+    """
+    try:
+        xss = _yl.load_cross_sections(platform)
+        for xs in xss:
+            if xs.get("name") == xs_name:
+                layers = xs.get("layers") or []
+                if layers:
+                    layer = layers[0].get("layer")
+                    if layer:
+                        return (int(layer[0]), int(layer[1]))
+    except Exception:
+        pass
+    # Fallback: pick the first electrical-like LayerSpec available
+    for cand in _ELECTRICAL_LAYER_CANDIDATES:
+        if cand in tech.layers:
+            return (int(tech.layers[cand].layer[0]),
+                    int(tech.layers[cand].layer[1]))
+    raise KeyError(
+        f"Could not resolve electrical layer for cross_section {xs_name!r} "
+        f"in platform with no Heat_CP_LF / Electrode_LF layer."
+    )
 
 # Default fiber-port z position (above the top oxide). Computed at load time
 # from the active technology's parametric kwargs when available.
@@ -81,9 +111,12 @@ def component(
     # parametric kwargs (Si thickness + top oxide + headroom).
     fiber_z = _fiber_port_z(technology or pf.config.default_technology)
 
-    # Add ports from YAML
+    # Add ports from YAML — pass the platform name so the electrical
+    # layer resolver can read cross_sections.yaml.
     for p in meta.get("ports", []):
-        _add_port(comp, p, technology or pf.config.default_technology, fiber_z)
+        p2 = dict(p)
+        p2["_platform"] = platform
+        _add_port(comp, p2, technology or pf.config.default_technology, fiber_z)
 
     # Attach a Tidy3D model. The default Tidy3D bounding box is derived
     # from the port windows, which can be too tight when the component
@@ -179,13 +212,14 @@ def _add_port(
 
     if port_type in ("electrical_dc", "electrical_rf"):
         # Heaters and RF DC contacts are routed as Terminals (not guided-mode
-        # ports). The contact-pad layer is implied by the YAML cross_section.
-        # The terminal Rectangle should match the actual contact-pad polygon
-        # in the GDS (so the terminal area equals the pad area), with a
-        # fallback to a square marker when no pad is found.
+        # ports). The routing layer comes from the platform's
+        # cross_sections.yaml (so passive platforms use Heat_CP_LF (41,0)
+        # and active uses Electrode_LF (13,0) automatically). The Terminal
+        # Rectangle matches the actual contact-pad polygon in the GDS,
+        # with a fallback to a square marker when no pad is found.
         xs = port_meta.get("cross_section", "dc")
-        layer_name = _ELECTRICAL_LAYERS.get(xs, "Heat_CP_LF")
-        layer_tuple = tuple(int(v) for v in tech.layers[layer_name].layer)
+        platform = port_meta.get("_platform", "")  # caller can pass
+        layer_tuple = _electrical_layer_for_xs(tech, xs, platform)
         pad_bounds = _find_pad_bounds(comp, layer_tuple, center)
         if pad_bounds is not None:
             (x0, y0), (x1, y1) = pad_bounds

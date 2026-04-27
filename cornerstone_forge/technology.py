@@ -23,6 +23,7 @@ from typing import Any, Dict
 
 from . import _yaml_loader as _yl
 from ._platforms.si_220nm_passive import si220_passive
+from ._platforms.si_220nm_active import si220_active
 from ._platforms.si_340nm import si340
 from ._platforms.si_500nm import si500
 from ._platforms.sin_300nm import sin300
@@ -31,7 +32,8 @@ from ._platforms.ge_on_si import ge_on_si
 from ._platforms.si_sus import si_sus_bias, si_sus_not_bias
 
 __all__ = [
-    "si220_passive", "si340", "si500", "sin300", "sin200", "ge_on_si",
+    "si220_passive", "si220_active", "si340", "si500",
+    "sin300", "sin200", "ge_on_si",
     "si_sus_bias", "si_sus_not_bias", "drc_metadata",
 ]
 
