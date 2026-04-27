@@ -27,8 +27,9 @@ from ._platforms.si_340nm import si340
 from ._platforms.si_500nm import si500
 from ._platforms.sin_300nm import sin300
 from ._platforms.sin_200nm import sin200
+from ._platforms.ge_on_si import ge_on_si
 
-__all__ = ["si220_passive", "si340", "si500", "sin300", "sin200", "drc_metadata"]
+__all__ = ["si220_passive", "si340", "si500", "sin300", "sin200", "ge_on_si", "drc_metadata"]
 
 
 def drc_metadata(platform: str = "Si_220nm_passive") -> Dict[Any, Any]:
